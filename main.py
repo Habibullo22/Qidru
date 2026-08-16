@@ -18,10 +18,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("8611335484:AAHoH8mg1OO9V7PDB3wUlZ6wU3HxsQx7avY")
-ADMIN_ID = int(os.getenv("5815294733", "0"))
+ADMIN_ID = int(os.getenv("5815294733", "1"))
 
 if not BOT_TOKEN:
-    raise RuntimeError("8611335484:AAHoH8mg1OO9V7PDB3wUlZ6wU3HxsQx7avY")
+    raise RuntimeError("BOT_TOKEN Secrets ichida topilmadi!")
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
