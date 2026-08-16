@@ -21,9 +21,9 @@ BOT_TOKEN = os.getenv("8611335484:AAHoH8mg1OO9V7PDB3wUlZ6wU3HxsQx7avY")
 ADMIN_ID = int(os.getenv("5815294733", "0"))
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN Secrets ichida topilmadi!")
+    raise RuntimeError("8611335484:AAHoH8mg1OO9V7PDB3wUlZ6wU3HxsQx7avY")
 
-bot = Bot(BOT_TOKEN)
+bot = Bot(8611335484:AAHoH8mg1OO9V7PDB3wUlZ6wU3HxsQx7avY)
 dp = Dispatcher()
 
 DB_NAME = "bot.db"
