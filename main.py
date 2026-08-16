@@ -1,8 +1,8 @@
 import asyncio
-import sqlite3
 import html
+import re
+import sqlite3
 from datetime import datetime, timedelta
-from collections import Counter
 from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, F
@@ -12,40 +12,36 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from ddgs import DDGS
 
 
-# ============================================================
-# CONFIG
-# ============================================================
+# =========================================================
+# SOZLAMALAR
+# =========================================================
 
 BOT_TOKEN = "8611335484:AAHoH8mg1OO9V7PDB3wUlZ6wU3HxsQx7avY"
 ADMIN_ID = 5815294733
 
-CARD_NUMBER = "9860606750247151"
-CARD_NAME = "Abidjanov H"
+CARD = "9860606750247151"
+CARD_OWNER = "Abidjanov H"
 
 VIP_PRICE = 30000
 VIP_DAYS = 7
 
-DB_FILE = "bot.db"
-
-
-if BOT_TOKEN == "BU_YERGA_BOT_TOKEN":
-    raise RuntimeError("BOT_TOKEN ni main.py ichiga yozing")
+DB = "database.sqlite3"
 
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
 
-# ============================================================
+# =========================================================
 # DATABASE
-# ============================================================
+# =========================================================
 
-def connect():
-    return sqlite3.connect(DB_FILE)
+def db():
+    return sqlite3.connect(DB)
 
 
 def init_db():
-    con = connect()
+    con = db()
     cur = con.cursor()
 
     cur.execute("""
@@ -83,12 +79,8 @@ def init_db():
     con.close()
 
 
-# ============================================================
-# USER DATABASE
-# ============================================================
-
 def save_user(user):
-    con = connect()
+    con = db()
     cur = con.cursor()
 
     cur.execute("""
@@ -116,128 +108,24 @@ def save_user(user):
     con.close()
 
 
-def get_user(user_id):
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        SELECT id, username, first_name, balance,
-               vip_until, banned, created_at
-        FROM users
-        WHERE id=?
-    """, (user_id,))
-
-    row = cur.fetchone()
-    con.close()
-
-    return row
-
-
-def find_users(query):
-    query = query.strip().lstrip("@")
-
-    con = connect()
+def get_user(uid):
+    con = db()
     cur = con.cursor()
 
     cur.execute("""
         SELECT id, username, first_name,
                balance, vip_until, banned
         FROM users
-        WHERE username LIKE ?
-           OR CAST(id AS TEXT) LIKE ?
-           OR first_name LIKE ?
-        LIMIT 20
-    """, (
-        f"%{query}%",
-        f"%{query}%",
-        f"%{query}%"
-    ))
-
-    rows = cur.fetchall()
-    con.close()
-
-    return rows
-
-
-def all_user_ids():
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("SELECT id FROM users WHERE banned=0")
-
-    rows = [x[0] for x in cur.fetchall()]
-
-    con.close()
-
-    return rows
-
-
-def add_balance(user_id, amount):
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        UPDATE users
-        SET balance=balance+?
         WHERE id=?
-    """, (amount, user_id))
+    """, (uid,))
 
-    con.commit()
+    row = cur.fetchone()
     con.close()
+    return row
 
 
-def set_banned(user_id, value):
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        UPDATE users
-        SET banned=?
-        WHERE id=?
-    """, (value, user_id))
-
-    con.commit()
-    con.close()
-
-
-def set_vip(user_id, days):
-    user = get_user(user_id)
-
-    if not user:
-        return None
-
-    now = datetime.now()
-
-    if user[4]:
-        try:
-            old = datetime.fromisoformat(user[4])
-            if old > now:
-                now = old
-        except:
-            pass
-
-    until = now + timedelta(days=days)
-
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        UPDATE users
-        SET vip_until=?
-        WHERE id=?
-    """, (
-        until.isoformat(),
-        user_id
-    ))
-
-    con.commit()
-    con.close()
-
-    return until
-
-
-def is_vip(user_id):
-    user = get_user(user_id)
+def vip_active(uid):
+    user = get_user(uid)
 
     if not user or not user[4]:
         return False
@@ -248,66 +136,136 @@ def is_vip(user_id):
         return False
 
 
-# ============================================================
-# SEARCH DATABASE
-# ============================================================
+def give_vip(uid, days=VIP_DAYS):
+    user = get_user(uid)
 
-def save_search(user_id, query):
-    con = connect()
+    if not user:
+        return None
+
+    start = datetime.now()
+
+    if user[4]:
+        try:
+            old = datetime.fromisoformat(user[4])
+            if old > start:
+                start = old
+        except:
+            pass
+
+    until = start + timedelta(days=days)
+
+    con = db()
     cur = con.cursor()
 
     cur.execute("""
-        INSERT INTO searches
-        (user_id, query, created_at)
-        VALUES (?, ?, ?)
-    """, (
-        user_id,
-        query,
-        datetime.now().isoformat()
-    ))
+        UPDATE users
+        SET vip_until=?
+        WHERE id=?
+    """, (until.isoformat(), uid))
+
+    con.commit()
+    con.close()
+
+    return until
+
+
+def add_balance(uid, amount):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        UPDATE users
+        SET balance=balance+?
+        WHERE id=?
+    """, (amount, uid))
 
     con.commit()
     con.close()
 
 
-# ============================================================
-# REAL WEB SEARCH
-# ============================================================
+# =========================================================
+# SEARCH
+# =========================================================
 
-def web_search(username, mode="all"):
+def clean_username(q):
+    q = q.strip()
+    q = q.replace("https://t.me/", "")
+    q = q.replace("http://t.me/", "")
+    q = q.replace("t.me/", "")
+    return q.lstrip("@").split()[0]
+
+
+def telegram_link(url):
     """
-    Faqat ochiq web/indexlangan natijalarni qidiradi.
+    URL Telegram public sahifasimi?
+    """
+    try:
+        host = urlparse(url).netloc.lower()
+        return "t.me" in host or "telegram.me" in host
+    except:
+        return False
+
+
+def classify(url, title="", body=""):
+    """
+    Ochiq Telegram natijasini taxminiy kategoriyaga ajratadi.
+    Bu Telegram ichidagi yashirin a'zolikni aniqlamaydi.
     """
 
-    username = username.strip().lstrip("@")
+    text = f"{title} {body}".lower()
 
-    if not username:
-        return []
+    if not telegram_link(url):
+        return "web"
+
+    if "channel" in text:
+        return "channel"
+
+    if "group" in text:
+        return "group"
+
+    return "telegram"
+
+
+def search_public(username, section):
+    """
+    Faqat public/indexed web search.
+    """
+
+    username = clean_username(username)
 
     queries = []
 
-    if mode == "groups":
+    if section == "groups":
         queries = [
-            f'site:t.me "{username}" group',
-            f'"@{username}" group Telegram'
+            f'site:t.me "{username}" "group"',
+            f'site:t.me "{username}" Telegram group',
+            f'"@{username}" Telegram group'
         ]
 
-    elif mode == "channels":
+    elif section == "written":
         queries = [
-            f'site:t.me "{username}" channel',
-            f'"@{username}" channel Telegram'
+            f'site:t.me "{username}"',
+            f'"@{username}" Telegram message',
+            f'"{username}" "t.me/"'
         ]
 
-    elif mode == "messages":
+    elif section == "channels":
+        queries = [
+            f'site:t.me "{username}" "channel"',
+            f'site:t.me "{username}" Telegram channel',
+            f'"@{username}" Telegram channel'
+        ]
+
+    elif section == "activity":
         queries = [
             f'site:t.me "{username}"',
             f'"@{username}" Telegram'
         ]
 
-    elif mode == "web":
+    elif section == "profile":
         queries = [
-            f'"@{username}"',
-            f'"{username}"'
+            f'"@{username}" Telegram profile',
+            f'site:t.me "{username}"'
         ]
 
     else:
@@ -321,20 +279,20 @@ def web_search(username, mode="all"):
     seen = set()
 
     try:
-        with DDGS() as search:
+        with DDGS() as ddgs:
 
             for query in queries:
 
                 try:
-                    data = search.text(
+                    items = ddgs.text(
                         query,
-                        max_results=8
+                        max_results=10
                     )
                 except Exception as e:
-                    print("SEARCH QUERY ERROR:", e)
+                    print("SEARCH ERROR:", e)
                     continue
 
-                for item in data:
+                for item in items:
 
                     url = item.get("href") or item.get("url")
 
@@ -346,45 +304,47 @@ def web_search(username, mode="all"):
 
                     seen.add(url)
 
+                    title = item.get("title", "")
+                    body = item.get("body", "")
+
                     results.append({
-                        "title": item.get(
-                            "title",
-                            "Nomsiz"
-                        ),
+                        "title": title,
+                        "body": body,
                         "url": url,
-                        "body": item.get(
-                            "body",
-                            ""
+                        "type": classify(
+                            url,
+                            title,
+                            body
                         )
                     })
 
-                    if len(results) >= 20:
+                    if len(results) >= 30:
                         return results
 
     except Exception as e:
-        print("SEARCH ERROR:", e)
+        print("DDGS ERROR:", e)
 
     return results
 
 
-async def async_search(username, mode):
+async def do_search(username, section):
     loop = asyncio.get_running_loop()
 
     return await loop.run_in_executor(
         None,
-        web_search,
+        search_public,
         username,
-        mode
+        section
     )
 
 
-# ============================================================
+# =========================================================
 # KEYBOARDS
-# ============================================================
+# =========================================================
 
-def main_menu(user_id):
+def main_keyboard(uid):
 
-    buttons = [
+    rows = [
         [
             InlineKeyboardButton(
                 text="🔎 Qidirish",
@@ -400,7 +360,7 @@ def main_menu(user_id):
         [
             InlineKeyboardButton(
                 text="👤 Profilim",
-                callback_data="profile"
+                callback_data="myprofile"
             ),
             InlineKeyboardButton(
                 text="⭐ VIP",
@@ -410,7 +370,7 @@ def main_menu(user_id):
         [
             InlineKeyboardButton(
                 text="📊 Statistika",
-                callback_data="stats"
+                callback_data="statistics"
             )
         ],
         [
@@ -421,8 +381,8 @@ def main_menu(user_id):
         ]
     ]
 
-    if user_id == ADMIN_ID:
-        buttons.append([
+    if uid == ADMIN_ID:
+        rows.append([
             InlineKeyboardButton(
                 text="🛠 Admin panel",
                 callback_data="admin"
@@ -430,11 +390,11 @@ def main_menu(user_id):
         ])
 
     return InlineKeyboardMarkup(
-        inline_keyboard=buttons
+        inline_keyboard=rows
     )
 
 
-def back():
+def back_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -447,48 +407,50 @@ def back():
     )
 
 
-def search_menu(username):
+def search_keyboard(username):
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="👤 Profil",
-                    callback_data=f"sprofile:{username}"
+                    callback_data=f"profile:{username}"
+                ),
+                InlineKeyboardButton(
+                    text="📸 Ochiq rasmlar",
+                    callback_data=f"photos:{username}"
                 )
             ],
             [
                 InlineKeyboardButton(
                     text="👥 Guruhlar",
-                    callback_data=f"sgroups:{username}"
+                    callback_data=f"groups:{username}"
                 ),
                 InlineKeyboardButton(
-                    text="📢 Kanallar",
-                    callback_data=f"schannels:{username}"
+                    text="💬 Yozgan guruhlari",
+                    callback_data=f"written:{username}"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="💬 Ochiq xabarlar",
-                    callback_data=f"smsgs:{username}"
+                    text="📢 Kanallar",
+                    callback_data=f"channels:{username}"
                 )
             ],
             [
+                InlineKeyboardButton(
+                    text="🏷 Username izlari",
+                    callback_data=f"history:{username}"
+                ),
                 InlineKeyboardButton(
                     text="🕐 Faollik",
-                    callback_data=f"sactivity:{username}"
+                    callback_data=f"activity:{username}"
                 )
             ],
             [
                 InlineKeyboardButton(
                     text="🌐 Web",
-                    callback_data=f"sweb:{username}"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔗 Username izlari",
-                    callback_data=f"sall:{username}"
+                    callback_data=f"web:{username}"
                 )
             ],
             [
@@ -501,9 +463,9 @@ def search_menu(username):
     )
 
 
-# ============================================================
+# =========================================================
 # START
-# ============================================================
+# =========================================================
 
 @dp.message(CommandStart())
 async def start(message: Message):
@@ -514,32 +476,35 @@ async def start(message: Message):
 
     if user and user[5]:
         await message.answer(
-            "🚫 Siz botdan foydalanishingiz bloklangansiz."
+            "🚫 Siz botdan foydalanishingiz bloklangan."
         )
         return
 
     await message.answer(
         "👋 <b>Xush kelibsiz!</b>\n\n"
-        "🔎 User qidirish uchun qidiruv bo‘limidan foydalaning.\n\n"
-        "Faqat ochiq manbalardagi ma'lumotlar ko‘rsatiladi.",
+        "🔎 Ochiq manbalardan username qidirish.\n"
+        "⭐ VIP: 7 kun / 30 000 so‘m",
         parse_mode="HTML",
-        reply_markup=main_menu(message.from_user.id)
+        reply_markup=main_keyboard(
+            message.from_user.id
+        )
     )
 
 
-# ============================================================
-# SEARCH BUTTON
-# ============================================================
+# =========================================================
+# SEARCH
+# =========================================================
 
 @dp.callback_query(F.data == "search")
-async def search_button(call: CallbackQuery):
+async def search_start(call):
 
-    if not is_vip(call.from_user.id):
+    if not vip_active(call.from_user.id):
 
         await call.message.edit_text(
-            "🔒 <b>VIP KERAK</b>\n\n"
-            "Qidiruv funksiyasi VIP foydalanuvchilar uchun.\n\n"
-            "⭐ 30 kunlik VIP: <b>30 000 so‘m</b>",
+            "🔒 <b>VIP kerak</b>\n\n"
+            "Qidiruvdan foydalanish uchun "
+            "7 kunlik VIP kerak.\n\n"
+            "💰 30 000 so‘m",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
@@ -566,108 +531,113 @@ async def search_button(call: CallbackQuery):
         "🔎 <b>QIDIRISH</b>\n\n"
         "👤 Username yuboring.\n\n"
         "Masalan:\n"
-        "<code>@fon_abidjan</code>",
+        "<code>@username</code>",
         parse_mode="HTML",
-        reply_markup=back()
+        reply_markup=back_keyboard()
     )
 
     await call.answer()
 
 
-# ============================================================
-# RECEIVE USERNAME
-# ============================================================
-
 @dp.message(F.text.startswith("@"))
-async def receive_username(message: Message):
+async def username_received(message: Message):
 
     save_user(message.from_user)
 
-    if not is_vip(message.from_user.id):
-
+    if not vip_active(message.from_user.id):
         await message.answer(
             "🔒 Qidiruv uchun VIP kerak."
         )
         return
 
-    username = message.text.strip().lstrip("@")
+    username = clean_username(message.text)
 
     if len(username) < 3:
         await message.answer(
-            "❌ Username juda qisqa."
+            "❌ Username noto‘g‘ri."
         )
         return
 
-    save_search(
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        INSERT INTO searches
+        (user_id, query, created_at)
+        VALUES (?, ?, ?)
+    """, (
         message.from_user.id,
-        username
-    )
+        username,
+        datetime.now().isoformat()
+    ))
+
+    con.commit()
+    con.close()
 
     await message.answer(
-        "🔎 <b>QIDIRUV BAJARILDI</b>\n\n"
-        f"👤 <code>@{html.escape(username)}</code>\n\n"
-        "Quyidagi bo‘limlardan keraklisini tanlang:",
+        "👤 <b>QIDIRUV TAYYOR</b>\n\n"
+        f"🔎 <code>@{html.escape(username)}</code>\n\n"
+        "Kerakli bo‘limni tanlang:",
         parse_mode="HTML",
-        reply_markup=search_menu(username)
+        reply_markup=search_keyboard(username)
     )
 
 
-# ============================================================
-# SEARCH SECTIONS
-# ============================================================
+# =========================================================
+# SECTION RESULT
+# =========================================================
 
-async def section_search(
+async def show_section(
     call,
     username,
-    mode,
-    title
+    section,
+    heading
 ):
 
     await call.answer("🔎 Qidirilmoqda...")
 
-    msg = await call.message.edit_text(
-        "🔎 <b>QIDIRILMOQDA...</b>\n\n"
-        f"👤 @{html.escape(username)}\n"
-        f"📂 {title}",
+    await call.message.edit_text(
+        f"🔎 <b>{heading}</b>\n\n"
+        f"@{html.escape(username)}\n\n"
+        "🌐 Ochiq manbalar tekshirilmoqda...",
         parse_mode="HTML"
     )
 
-    results = await async_search(
+    results = await do_search(
         username,
-        mode
+        section
     )
 
     if not results:
 
-        await msg.edit_text(
-            f"{title}\n\n"
-            "❌ Ochiq manbalardan ma'lumot topilmadi.",
-            reply_markup=search_menu(username)
+        await call.message.edit_text(
+            f"{heading}\n\n"
+            "❌ Ochiq/indexlangan manbalarda "
+            "tasdiqlangan ma'lumot topilmadi.",
+            parse_mode="HTML",
+            reply_markup=search_keyboard(username)
         )
-
         return
 
     text = (
-        f"{title}\n\n"
+        f"<b>{heading}</b>\n\n"
         f"👤 <code>@{html.escape(username)}</code>\n"
-        f"📊 Topildi: <b>{len(results)}</b>\n\n"
+        f"📊 Topilgan manbalar: <b>{len(results)}</b>\n\n"
     )
 
     buttons = []
 
-    for i, item in enumerate(results[:10], 1):
+    for i, item in enumerate(results[:12], 1):
 
-        title_text = html.escape(
+        title = html.escape(
             item["title"][:100]
         )
 
         body = html.escape(
-            item["body"][:250]
+            item["body"][:220]
         )
 
-        text += (
-            f"<b>{i}. {title_text}</b>\n"
-        )
+        text += f"<b>{i}. {title}</b>\n"
 
         if body:
             text += f"{body}\n"
@@ -676,22 +646,27 @@ async def section_search(
 
         buttons.append([
             InlineKeyboardButton(
-                text=f"🔗 {i}-manba",
+                text=f"🔗 {i}-manbani ochish",
                 url=item["url"]
             )
         ])
+
+    text += (
+        "ℹ️ Natijalar ochiq/indexlangan "
+        "manbalardan olingan."
+    )
 
     if len(text) > 3900:
         text = text[:3900] + "\n..."
 
     buttons.append([
         InlineKeyboardButton(
-            text="⬅️ Qidiruv menyusi",
-            callback_data=f"searchmenu:{username}"
+            text="⬅️ Qidiruv bo‘limlari",
+            callback_data=f"menu:{username}"
         )
     ])
 
-    await msg.edit_text(
+    await call.message.edit_text(
         text,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
@@ -700,78 +675,86 @@ async def section_search(
     )
 
 
-@dp.callback_query(F.data.startswith("sgroups:"))
+# =========================================================
+# GROUPS
+# =========================================================
+
+@dp.callback_query(F.data.startswith("groups:"))
 async def groups(call):
+
     username = call.data.split(":", 1)[1]
 
-    await section_search(
+    await show_section(
         call,
         username,
         "groups",
-        "👥 GURUHLAR"
+        "👥 OCHIQ GURUHLAR"
     )
 
 
-@dp.callback_query(F.data.startswith("schannels:"))
-async def channels(call):
+# =========================================================
+# WRITTEN GROUPS
+# =========================================================
+
+@dp.callback_query(F.data.startswith("written:"))
+async def written(call):
+
     username = call.data.split(":", 1)[1]
 
-    await section_search(
+    await show_section(
+        call,
+        username,
+        "written",
+        "💬 OCHIQ XABARLAR / YOZGAN JOYLARI"
+    )
+
+
+# =========================================================
+# CHANNELS
+# =========================================================
+
+@dp.callback_query(F.data.startswith("channels:"))
+async def channels(call):
+
+    username = call.data.split(":", 1)[1]
+
+    await show_section(
         call,
         username,
         "channels",
-        "📢 KANALLAR"
+        "📢 OCHIQ KANALLAR"
     )
 
 
-@dp.callback_query(F.data.startswith("smsgs:"))
-async def messages_search(call):
+# =========================================================
+# WEB
+# =========================================================
+
+@dp.callback_query(F.data.startswith("web:"))
+async def web(call):
+
     username = call.data.split(":", 1)[1]
 
-    await section_search(
-        call,
-        username,
-        "messages",
-        "💬 OCHIQ XABARLAR"
-    )
-
-
-@dp.callback_query(F.data.startswith("sweb:"))
-async def web_section(call):
-    username = call.data.split(":", 1)[1]
-
-    await section_search(
+    await show_section(
         call,
         username,
         "web",
-        "🌐 WEB"
+        "🌐 WEB MANBALARI"
     )
 
 
-@dp.callback_query(F.data.startswith("sall:"))
-async def all_section(call):
-    username = call.data.split(":", 1)[1]
+# =========================================================
+# PROFILE
+# =========================================================
 
-    await section_search(
-        call,
-        username,
-        "all",
-        "🔗 USERNAME IZLARI"
-    )
-
-
-# ============================================================
-# PROFILE SEARCH
-# ============================================================
-
-@dp.callback_query(F.data.startswith("sprofile:"))
-async def profile_search(call):
+@dp.callback_query(F.data.startswith("profile:"))
+async def profile(call):
 
     username = call.data.split(":", 1)[1]
 
-    results = await async_search(
+    results = await do_search(
         username,
-        "all"
+        "profile"
     )
 
     text = (
@@ -779,50 +762,122 @@ async def profile_search(call):
         f"🔎 Username: <code>@{html.escape(username)}</code>\n\n"
     )
 
-    if not results:
-        text += (
-            "❌ Ochiq manbalardan profilga oid "
-            "tasdiqlangan natija topilmadi."
-        )
-
-    else:
+    if results:
 
         text += "🌐 Ochiq manbalarda topilgan:\n\n"
 
-        for item in results[:5]:
+        for item in results[:8]:
 
             text += (
                 f"• <b>{html.escape(item['title'][:100])}</b>\n"
-                f"{html.escape(item['body'][:200])}\n\n"
+                f"{html.escape(item['body'][:180])}\n\n"
             )
+
+    else:
+
+        text += (
+            "❌ Ochiq manbalarda tasdiqlangan "
+            "profil ma'lumoti topilmadi."
+        )
 
     await call.message.edit_text(
         text,
         parse_mode="HTML",
-        reply_markup=search_menu(username)
+        reply_markup=search_keyboard(username)
     )
 
     await call.answer()
 
 
-# ============================================================
-# ACTIVITY
-# ============================================================
+# =========================================================
+# PHOTOS
+# =========================================================
 
-@dp.callback_query(F.data.startswith("sactivity:"))
+@dp.callback_query(F.data.startswith("photos:"))
+async def photos(call):
+
+    username = call.data.split(":", 1)[1]
+
+    await call.message.edit_text(
+        "📸 <b>OCHIQ PROFIL RASMLARI</b>\n\n"
+        f"👤 @{html.escape(username)}\n\n"
+        "Bot faqat webda ochiq ko‘rinadigan "
+        "rasm manbalarini ko‘rsatishi mumkin.\n\n"
+        "Telegram Bot API boshqa odamning "
+        "eski profil rasmlari tarixini bermaydi.",
+        parse_mode="HTML",
+        reply_markup=search_keyboard(username)
+    )
+
+    await call.answer()
+
+
+# =========================================================
+# USERNAME HISTORY
+# =========================================================
+
+@dp.callback_query(F.data.startswith("history:"))
+async def history(call):
+
+    username = call.data.split(":", 1)[1]
+
+    results = await do_search(
+        username,
+        "profile"
+    )
+
+    text = (
+        "🏷 <b>USERNAME IZLARI</b>\n\n"
+        f"🔎 Hozirgi so‘rov: "
+        f"<code>@{html.escape(username)}</code>\n\n"
+    )
+
+    if results:
+
+        text += (
+            "Ochiq web manbalarida shu username "
+            "bilan bog‘liq natijalar:\n\n"
+        )
+
+        for item in results[:10]:
+
+            text += (
+                f"• {html.escape(item['title'][:100])}\n"
+                f"{html.escape(item['body'][:150])}\n\n"
+            )
+
+    else:
+
+        text += (
+            "❌ Ochiq manbalarda username tarixi "
+            "bo‘yicha tasdiqlangan ma'lumot topilmadi."
+        )
+
+    await call.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=search_keyboard(username)
+    )
+
+    await call.answer()
+
+
+# =========================================================
+# ACTIVITY
+# =========================================================
+
+@dp.callback_query(F.data.startswith("activity:"))
 async def activity(call):
 
     username = call.data.split(":", 1)[1]
 
-    await call.answer("🔎 Tahlil qilinmoqda...")
-
-    results = await async_search(
+    results = await do_search(
         username,
-        "messages"
+        "activity"
     )
 
     text = (
-        "🕐 <b>FAOLLIK TAHLILI</b>\n\n"
+        "🕐 <b>FAOLLIK</b>\n\n"
         f"👤 @{html.escape(username)}\n\n"
     )
 
@@ -835,104 +890,75 @@ async def activity(call):
     else:
 
         text += (
-            f"📊 Ochiq manbalardan topilgan "
-            f"natijalar: <b>{len(results)}</b>\n\n"
-            "⚠️ Bu online-history emas.\n"
-            "Tahlil faqat ochiq web xabarlarining "
-            "ko‘rinadigan sana/vaqtlariga bog‘liq.\n\n"
-            "🌐 Manbalar:\n"
+            f"📊 Ochiq manbalar: <b>{len(results)}</b>\n\n"
+            "Bu online-history emas.\n"
+            "Quyidagi natijalar ochiq web xabarlaridan "
+            "olingan va ularning manba linklari orqali "
+            "tekshiriladi.\n\n"
         )
 
-        for item in results[:8]:
+        for i, item in enumerate(results[:8], 1):
 
             text += (
-                f"• {html.escape(item['title'][:100])}\n"
+                f"{i}. {html.escape(item['title'][:100])}\n"
+                f"{html.escape(item['body'][:150])}\n\n"
             )
 
     await call.message.edit_text(
         text,
         parse_mode="HTML",
-        reply_markup=search_menu(username)
+        reply_markup=search_keyboard(username)
     )
 
+    await call.answer()
 
-# ============================================================
+
+# =========================================================
 # SEARCH MENU
-# ============================================================
+# =========================================================
 
-@dp.callback_query(F.data.startswith("searchmenu:"))
-async def search_menu_back(call):
+@dp.callback_query(F.data.startswith("menu:"))
+async def menu(call):
 
     username = call.data.split(":", 1)[1]
 
     await call.message.edit_text(
         "📋 <b>QIDIRUV BO‘LIMLARI</b>\n\n"
-        f"👤 @{html.escape(username)}\n\n"
-        "Kerakli bo‘limni tanlang:",
+        f"👤 @{html.escape(username)}",
         parse_mode="HTML",
-        reply_markup=search_menu(username)
+        reply_markup=search_keyboard(username)
     )
 
     await call.answer()
 
 
-# ============================================================
-# PROFILE
-# ============================================================
-
-@dp.callback_query(F.data == "profile")
-async def my_profile(call):
-
-    user = get_user(call.from_user.id)
-
-    vip = (
-        "⭐ FAOL"
-        if is_vip(call.from_user.id)
-        else "🆓 FAOL EMAS"
-    )
-
-    await call.message.edit_text(
-        "👤 <b>PROFILIM</b>\n\n"
-        f"🆔 ID: <code>{user[0]}</code>\n"
-        f"👤 Username: @{html.escape(user[1] or 'yo‘q')}\n"
-        f"💰 Balans: <b>{user[3]:,} so‘m</b>\n"
-        f"⭐ VIP: {vip}\n"
-        f"⏰ VIP tugashi: "
-        f"<code>{user[4] or '—'}</code>",
-        parse_mode="HTML",
-        reply_markup=back()
-    )
-
-    await call.answer()
-
-
-# ============================================================
+# =========================================================
 # VIP
-# ============================================================
+# =========================================================
 
 @dp.callback_query(F.data == "vip")
 async def vip(call):
 
-    if is_vip(call.from_user.id):
+    user = get_user(call.from_user.id)
 
-        user = get_user(call.from_user.id)
+    if vip_active(call.from_user.id):
 
         await call.message.edit_text(
             "⭐ <b>VIP FAOL</b>\n\n"
             f"⏰ Tugashi:\n"
             f"<code>{user[4]}</code>",
             parse_mode="HTML",
-            reply_markup=back()
+            reply_markup=back_keyboard()
         )
 
     else:
 
         await call.message.edit_text(
-            "⭐ <b>VIP</b>\n\n"
-            f"💰 Narxi: <b>{VIP_PRICE:,} so‘m</b>\n"
-            f"📅 Muddat: <b>{VIP_DAYS} kun</b>\n\n"
-            "VIP orqali qidiruv funksiyalaridan "
-            "foydalanish mumkin.",
+            "⭐ <b>7 KUNLIK VIP</b>\n\n"
+            "💰 Narxi: <b>30 000 so‘m</b>\n"
+            "📅 Muddat: <b>7 kun</b>\n\n"
+            "To‘lovni amalga oshirish uchun "
+            "Hisob to‘ldirish bo‘limiga kiring.",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
@@ -955,14 +981,14 @@ async def vip(call):
     await call.answer()
 
 
-# ============================================================
+# =========================================================
 # DEPOSIT
-# ============================================================
+# =========================================================
 
 @dp.callback_query(F.data == "deposit")
 async def deposit(call):
 
-    con = connect()
+    con = db()
     cur = con.cursor()
 
     cur.execute("""
@@ -980,11 +1006,11 @@ async def deposit(call):
     if pending:
 
         await call.message.edit_text(
-            "⏳ <b>ARIZA TEKSHIRILMOQDA</b>\n\n"
-            "Oldingi to‘lovingiz admin tomonidan "
-            "ko‘rib chiqilmoqda.",
+            "⏳ <b>TO‘LOV TEKSHIRILMOQDA</b>\n\n"
+            "Admin oldingi arizangizni "
+            "ko‘rib chiqmoqda.",
             parse_mode="HTML",
-            reply_markup=back()
+            reply_markup=back_keyboard()
         )
 
         await call.answer()
@@ -994,17 +1020,17 @@ async def deposit(call):
         "💰 <b>HISOB TO‘LDIRISH</b>\n\n"
         f"💵 Summa: <b>{VIP_PRICE:,} so‘m</b>\n\n"
         f"💳 Karta:\n"
-        f"<code>{CARD_NUMBER}</code>\n"
-        f"👤 Egasi: <b>{CARD_NAME}</b>\n\n"
-        "To‘lovni amalga oshirgandan keyin "
-        "tugmani bosing.",
+        f"<code>{CARD}</code>\n"
+        f"👤 {CARD_OWNER}\n\n"
+        "To‘lov qilgandan keyin "
+        "«To‘lov qildim» tugmasini bosing.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
                         text="✅ To‘lov qildim",
-                        callback_data="payment_done"
+                        callback_data="paid"
                     )
                 ],
                 [
@@ -1020,10 +1046,10 @@ async def deposit(call):
     await call.answer()
 
 
-@dp.callback_query(F.data == "payment_done")
-async def payment_done(call):
+@dp.callback_query(F.data == "paid")
+async def paid(call):
 
-    con = connect()
+    con = db()
     cur = con.cursor()
 
     cur.execute("""
@@ -1034,11 +1060,11 @@ async def payment_done(call):
         LIMIT 1
     """, (call.from_user.id,))
 
-    existing = cur.fetchone()
+    exists = cur.fetchone()
 
-    if existing:
+    if exists:
 
-        payment_id = existing[0]
+        payment_id = exists[0]
 
     else:
 
@@ -1049,18 +1075,18 @@ async def payment_done(call):
         """, (
             call.from_user.id,
             VIP_PRICE,
-            "pending"
+            datetime.now().isoformat()
         ))
 
         payment_id = cur.lastrowid
-        con.commit()
 
+    con.commit()
     con.close()
 
     user = get_user(call.from_user.id)
 
     username = (
-        f"@{user[1]}"
+        "@" + user[1]
         if user and user[1]
         else "username yo‘q"
     )
@@ -1083,27 +1109,28 @@ async def payment_done(call):
     await bot.send_message(
         ADMIN_ID,
         "🔔 <b>YANGI TO‘LOV</b>\n\n"
-        f"🆔 Ariza: <code>#{payment_id}</code>\n"
+        f"🆔 Ariza: #{payment_id}\n"
         f"👤 {html.escape(username)}\n"
         f"🆔 ID: <code>{call.from_user.id}</code>\n"
-        f"💰 <b>{VIP_PRICE:,} so‘m</b>",
+        f"💰 {VIP_PRICE:,} so‘m\n"
+        f"⭐ VIP: {VIP_DAYS} kun",
         parse_mode="HTML",
         reply_markup=keyboard
     )
 
     await call.message.edit_text(
         "⏳ <b>Arizangiz admin'ga yuborildi.</b>\n\n"
-        "Admin to‘lovni tekshiradi.",
+        "Tasdiqlangandan keyin 7 kunlik VIP ochiladi.",
         parse_mode="HTML",
-        reply_markup=back()
+        reply_markup=back_keyboard()
     )
 
     await call.answer("Yuborildi")
 
 
-# ============================================================
-# ADMIN APPROVE
-# ============================================================
+# =========================================================
+# APPROVE
+# =========================================================
 
 @dp.callback_query(F.data.startswith("approve:"))
 async def approve(call):
@@ -1115,34 +1142,28 @@ async def approve(call):
         )
         return
 
-    payment_id = int(
-        call.data.split(":")[1]
-    )
+    pid = int(call.data.split(":")[1])
 
-    con = connect()
+    con = db()
     cur = con.cursor()
 
     cur.execute("""
         SELECT user_id, amount, status
         FROM payments
         WHERE id=?
-    """, (payment_id,))
+    """, (pid,))
 
     payment = cur.fetchone()
 
     if not payment:
         con.close()
-        await call.answer(
-            "Topilmadi",
-            show_alert=True
-        )
+        await call.answer("Topilmadi", show_alert=True)
         return
 
-    user_id, amount, status = payment
+    uid, amount, status = payment
 
     if status != "pending":
         con.close()
-
         await call.answer(
             "Bu ariza allaqachon ko‘rilgan",
             show_alert=True
@@ -1153,54 +1174,45 @@ async def approve(call):
         UPDATE payments
         SET status='approved'
         WHERE id=? AND status='pending'
-    """, (payment_id,))
-
-    cur.execute("""
-        UPDATE users
-        SET balance=balance+?
-        WHERE id=?
-    """, (
-        amount,
-        user_id
-    ))
+    """, (pid,))
 
     con.commit()
     con.close()
 
-    until = set_vip(
-        user_id,
+    add_balance(uid, amount)
+
+    until = give_vip(
+        uid,
         VIP_DAYS
     )
 
     await call.message.edit_text(
         "✅ <b>TO‘LOV TASDIQLANDI</b>\n\n"
-        f"🆔 #{payment_id}\n"
+        f"🆔 #{pid}\n"
         f"💰 {amount:,} so‘m\n"
-        f"⭐ VIP: {VIP_DAYS} kun\n\n"
+        f"⭐ VIP: {VIP_DAYS} kun\n"
+        f"⏰ {until}\n\n"
         "🔒 Ariza yopildi.",
         parse_mode="HTML"
     )
 
     try:
-
         await bot.send_message(
-            user_id,
+            uid,
             "✅ <b>To‘lov tasdiqlandi!</b>\n\n"
-            f"💰 Balans: +{amount:,} so‘m\n"
             f"⭐ VIP: {VIP_DAYS} kun\n"
             f"⏰ Tugashi: <code>{until}</code>",
             parse_mode="HTML"
         )
-
-    except Exception as e:
-        print("USER MESSAGE ERROR:", e)
+    except:
+        pass
 
     await call.answer("Tasdiqlandi")
 
 
-# ============================================================
-# ADMIN REJECT
-# ============================================================
+# =========================================================
+# REJECT
+# =========================================================
 
 @dp.callback_query(F.data.startswith("reject:"))
 async def reject(call):
@@ -1212,34 +1224,28 @@ async def reject(call):
         )
         return
 
-    payment_id = int(
-        call.data.split(":")[1]
-    )
+    pid = int(call.data.split(":")[1])
 
-    con = connect()
+    con = db()
     cur = con.cursor()
 
     cur.execute("""
         SELECT user_id, amount, status
         FROM payments
         WHERE id=?
-    """, (payment_id,))
+    """, (pid,))
 
     payment = cur.fetchone()
 
     if not payment:
         con.close()
-        await call.answer(
-            "Topilmadi",
-            show_alert=True
-        )
+        await call.answer("Topilmadi", show_alert=True)
         return
 
-    user_id, amount, status = payment
+    uid, amount, status = payment
 
     if status != "pending":
         con.close()
-
         await call.answer(
             "Bu ariza allaqachon ko‘rilgan",
             show_alert=True
@@ -1250,98 +1256,119 @@ async def reject(call):
         UPDATE payments
         SET status='rejected'
         WHERE id=? AND status='pending'
-    """, (payment_id,))
+    """, (pid,))
 
     con.commit()
     con.close()
 
     await call.message.edit_text(
         "❌ <b>TO‘LOV RAD ETILDI</b>\n\n"
-        f"🆔 #{payment_id}\n"
+        f"🆔 #{pid}\n"
         f"💰 {amount:,} so‘m\n\n"
         "🔒 Ariza yopildi.",
         parse_mode="HTML"
     )
 
     try:
-
         await bot.send_message(
-            user_id,
+            uid,
             "❌ <b>To‘lovingiz rad etildi.</b>\n\n"
-            "Qayta to‘lov arizasi yuborishingiz mumkin.",
+            "Qayta ariza yuborishingiz mumkin.",
             parse_mode="HTML"
         )
-
     except:
         pass
 
     await call.answer("Rad etildi")
 
 
-# ============================================================
-# ADMIN PANEL
-# ============================================================
+# =========================================================
+# MY PROFILE
+# =========================================================
 
-def admin_menu():
+@dp.callback_query(F.data == "myprofile")
+async def myprofile(call):
+
+    user = get_user(call.from_user.id)
+
+    vip = "✅ Faol" if vip_active(
+        call.from_user.id
+    ) else "❌ Faol emas"
+
+    await call.message.edit_text(
+        "👤 <b>PROFILIM</b>\n\n"
+        f"🆔 ID: <code>{user[0]}</code>\n"
+        f"👤 @{html.escape(user[1] or 'yo‘q')}\n"
+        f"💰 Balans: {user[3]:,} so‘m\n"
+        f"⭐ VIP: {vip}\n"
+        f"⏰ Tugashi: <code>{user[4] or '—'}</code>",
+        parse_mode="HTML",
+        reply_markup=back_keyboard()
+    )
+
+    await call.answer()
+
+
+# =========================================================
+# ADMIN
+# =========================================================
+
+def admin_keyboard():
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="👥 Userlar",
-                    callback_data="ausers"
-                )
-            ],
-            [
+                    callback_data="a_users"
+                ),
                 InlineKeyboardButton(
                     text="🔎 User qidirish",
-                    callback_data="asearch"
+                    callback_data="a_search"
                 )
             ],
             [
                 InlineKeyboardButton(
                     text="💳 To‘lovlar",
-                    callback_data="apayments"
+                    callback_data="a_payments"
                 )
             ],
             [
                 InlineKeyboardButton(
                     text="📊 Statistika",
-                    callback_data="astats"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="➕ Balans qo‘shish",
-                    callback_data="abalance_add"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="➖ Balans ayirish",
-                    callback_data="abalance_sub"
+                    callback_data="a_stats"
                 )
             ],
             [
                 InlineKeyboardButton(
                     text="⭐ VIP berish",
-                    callback_data="avip"
+                    callback_data="a_vip"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="➕ Balans",
+                    callback_data="a_add"
+                ),
+                InlineKeyboardButton(
+                    text="➖ Balans",
+                    callback_data="a_sub"
                 )
             ],
             [
                 InlineKeyboardButton(
                     text="🚫 Ban",
-                    callback_data="aban"
+                    callback_data="a_ban"
                 ),
                 InlineKeyboardButton(
                     text="✅ Unban",
-                    callback_data="aunban"
+                    callback_data="a_unban"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="📢 Xabar yuborish",
-                    callback_data="abroadcast"
+                    text="📢 Broadcast",
+                    callback_data="a_broadcast"
                 )
             ],
             [
@@ -1355,7 +1382,7 @@ def admin_menu():
 
 
 @dp.callback_query(F.data == "admin")
-async def admin_panel(call):
+async def admin(call):
 
     if call.from_user.id != ADMIN_ID:
         await call.answer(
@@ -1368,23 +1395,23 @@ async def admin_panel(call):
         "🛠 <b>ADMIN PANEL</b>\n\n"
         "Kerakli funksiyani tanlang:",
         parse_mode="HTML",
-        reply_markup=admin_menu()
+        reply_markup=admin_keyboard()
     )
 
     await call.answer()
 
 
-# ============================================================
+# =========================================================
 # ADMIN STATS
-# ============================================================
+# =========================================================
 
-@dp.callback_query(F.data == "astats")
+@dp.callback_query(F.data == "a_stats")
 async def admin_stats(call):
 
     if call.from_user.id != ADMIN_ID:
         return
 
-    con = connect()
+    con = db()
     cur = con.cursor()
 
     cur.execute("SELECT COUNT(*) FROM users")
@@ -1401,9 +1428,7 @@ async def admin_stats(call):
         SELECT COUNT(*)
         FROM users
         WHERE vip_until > ?
-    """, (
-        datetime.now().isoformat(),
-    ))
+    """, (datetime.now().isoformat(),))
 
     vip = cur.fetchone()[0]
 
@@ -1412,22 +1437,19 @@ async def admin_stats(call):
         FROM payments
         WHERE status='pending'
     """)
-
     pending = cur.fetchone()[0]
 
     cur.execute("""
-        SELECT COALESCE(SUM(amount),0)
+        SELECT COALESCE(SUM(amount), 0)
         FROM payments
         WHERE status='approved'
     """)
-
     income = cur.fetchone()[0]
 
     cur.execute("""
         SELECT COUNT(*)
         FROM searches
     """)
-
     searches = cur.fetchone()[0]
 
     con.close()
@@ -1438,26 +1460,26 @@ async def admin_stats(call):
         f"⭐ VIP: <b>{vip}</b>\n"
         f"🚫 Ban: <b>{banned}</b>\n"
         f"⏳ Kutilayotgan to‘lov: <b>{pending}</b>\n"
-        f"💰 Daromad: <b>{income:,} so‘m</b>\n"
+        f"💰 Tushum: <b>{income:,} so‘m</b>\n"
         f"🔎 Qidiruvlar: <b>{searches}</b>",
         parse_mode="HTML",
-        reply_markup=admin_menu()
+        reply_markup=admin_keyboard()
     )
 
     await call.answer()
 
 
-# ============================================================
+# =========================================================
 # ADMIN USERS
-# ============================================================
+# =========================================================
 
-@dp.callback_query(F.data == "ausers")
+@dp.callback_query(F.data == "a_users")
 async def admin_users(call):
 
     if call.from_user.id != ADMIN_ID:
         return
 
-    con = connect()
+    con = db()
     cur = con.cursor()
 
     cur.execute("""
@@ -1465,16 +1487,13 @@ async def admin_users(call):
                balance, vip_until, banned
         FROM users
         ORDER BY id DESC
-        LIMIT 15
+        LIMIT 20
     """)
 
     rows = cur.fetchall()
     con.close()
 
-    text = "👥 <b>OXIRGI USERLAR</b>\n\n"
-
-    if not rows:
-        text += "User yo‘q."
+    text = "👥 <b>USERLAR</b>\n\n"
 
     for row in rows:
 
@@ -1487,53 +1506,53 @@ async def admin_users(call):
             f"{'🚫 BAN' if banned else '✅ Aktiv'}\n\n"
         )
 
+    if not rows:
+        text += "Userlar yo‘q."
+
     await call.message.edit_text(
         text,
         parse_mode="HTML",
-        reply_markup=admin_menu()
+        reply_markup=admin_keyboard()
     )
 
     await call.answer()
 
 
-# ============================================================
-# ADMIN SEARCH
-# ============================================================
+# =========================================================
+# ADMIN COMMANDS
+# =========================================================
 
-@dp.callback_query(F.data == "asearch")
-async def admin_search(call):
-
-    if call.from_user.id != ADMIN_ID:
-        return
-
-    await call.message.edit_text(
-        "🔎 <b>USER QIDIRISH</b>\n\n"
-        "Username yoki Telegram ID yuboring.",
-        parse_mode="HTML",
-        reply_markup=admin_menu()
-    )
-
-    await call.answer()
-
-
-# ============================================================
-# ADMIN TEXT COMMANDS
-# ============================================================
-
-@dp.message(F.text.regexp(r"^/user "))
-async def admin_user_command(message):
+@dp.message(F.text.startswith("/user "))
+async def admin_user(message):
 
     if message.from_user.id != ADMIN_ID:
         return
 
-    query = message.text[6:].strip()
+    query = message.text[6:].strip().lstrip("@")
 
-    rows = find_users(query)
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT id, username, first_name,
+               balance, vip_until, banned
+        FROM users
+        WHERE username LIKE ?
+           OR CAST(id AS TEXT)=?
+           OR first_name LIKE ?
+        LIMIT 10
+    """, (
+        f"%{query}%",
+        query,
+        f"%{query}%"
+    ))
+
+    rows = cur.fetchall()
+    con.close()
 
     if not rows:
-
         await message.answer(
-            "❌ User topilmadi."
+            "❌ Bot bazasidan user topilmadi."
         )
         return
 
@@ -1543,22 +1562,18 @@ async def admin_user_command(message):
 
         await message.answer(
             "👤 <b>USER</b>\n\n"
-            f"🆔 ID: <code>{uid}</code>\n"
+            f"🆔 <code>{uid}</code>\n"
             f"👤 @{html.escape(username or 'yo‘q')}\n"
             f"📝 {html.escape(name or '')}\n"
             f"💰 {balance:,} so‘m\n"
-            f"⭐ VIP: {vip or 'yo‘q'}\n"
+            f"⭐ {vip or 'VIP yo‘q'}\n"
             f"{'🚫 BAN' if banned else '✅ Aktiv'}",
             parse_mode="HTML"
         )
 
 
-# ============================================================
-# ADMIN BALANCE COMMAND
-# ============================================================
-
-@dp.message(F.text.regexp(r"^/addbal "))
-async def add_balance_command(message):
+@dp.message(F.text.startswith("/addbal "))
+async def admin_add(message):
 
     if message.from_user.id != ADMIN_ID:
         return
@@ -1566,52 +1581,31 @@ async def add_balance_command(message):
     parts = message.text.split()
 
     if len(parts) != 3:
-
         await message.answer(
-            "Format:\n"
             "/addbal USER_ID SUMMA"
         )
         return
 
     try:
-
-        user_id = int(parts[1])
+        uid = int(parts[1])
         amount = int(parts[2])
-
     except:
-
-        await message.answer(
-            "❌ ID yoki summa noto‘g‘ri."
-        )
+        await message.answer("❌ Noto‘g‘ri.")
         return
 
-    user = get_user(user_id)
-
-    if not user:
-
-        await message.answer(
-            "❌ User topilmadi."
-        )
+    if not get_user(uid):
+        await message.answer("❌ User topilmadi.")
         return
 
-    add_balance(
-        user_id,
-        amount
-    )
+    add_balance(uid, amount)
 
     await message.answer(
-        f"✅ Balans qo‘shildi.\n\n"
-        f"👤 {user_id}\n"
-        f"💰 +{amount:,} so‘m"
+        f"✅ +{amount:,} so‘m qo‘shildi."
     )
 
 
-# ============================================================
-# ADMIN VIP COMMAND
-# ============================================================
-
-@dp.message(F.text.regexp(r"^/vip "))
-async def vip_command(message):
+@dp.message(F.text.startswith("/subbal "))
+async def admin_sub(message):
 
     if message.from_user.id != ADMIN_ID:
         return
@@ -1619,174 +1613,289 @@ async def vip_command(message):
     parts = message.text.split()
 
     if len(parts) != 3:
-
         await message.answer(
-            "Format:\n"
+            "/subbal USER_ID SUMMA"
+        )
+        return
+
+    try:
+        uid = int(parts[1])
+        amount = int(parts[2])
+    except:
+        await message.answer("❌ Noto‘g‘ri.")
+        return
+
+    user = get_user(uid)
+
+    if not user:
+        await message.answer("❌ User topilmadi.")
+        return
+
+    new_balance = max(
+        0,
+        user[3] - amount
+    )
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        UPDATE users
+        SET balance=?
+        WHERE id=?
+    """, (new_balance, uid))
+
+    con.commit()
+    con.close()
+
+    await message.answer(
+        f"✅ Balansdan {amount:,} so‘m ayirildi."
+    )
+
+
+@dp.message(F.text.startswith("/vip "))
+async def admin_vip(message):
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    parts = message.text.split()
+
+    if len(parts) != 3:
+        await message.answer(
             "/vip USER_ID KUN"
         )
         return
 
     try:
-
-        user_id = int(parts[1])
+        uid = int(parts[1])
         days = int(parts[2])
-
     except:
-
-        await message.answer(
-            "❌ Noto‘g‘ri."
-        )
+        await message.answer("❌ Noto‘g‘ri.")
         return
 
-    user = get_user(user_id)
-
-    if not user:
-
-        await message.answer(
-            "❌ User topilmadi."
-        )
+    if not get_user(uid):
+        await message.answer("❌ User topilmadi.")
         return
 
-    until = set_vip(
-        user_id,
-        days
-    )
+    until = give_vip(uid, days)
 
     await message.answer(
         "⭐ VIP berildi.\n\n"
-        f"👤 {user_id}\n"
+        f"👤 {uid}\n"
         f"📅 {days} kun\n"
         f"⏰ {until}"
     )
 
 
-# ============================================================
-# BAN COMMAND
-# ============================================================
-
-@dp.message(F.text.regexp(r"^/ban "))
-async def ban_command(message):
+@dp.message(F.text.startswith("/ban "))
+async def admin_ban(message):
 
     if message.from_user.id != ADMIN_ID:
         return
 
     try:
-        user_id = int(
-            message.text.split()[1]
-        )
+        uid = int(message.text.split()[1])
     except:
         await message.answer(
             "/ban USER_ID"
         )
         return
 
-    set_banned(
-        user_id,
-        1
-    )
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        UPDATE users
+        SET banned=1
+        WHERE id=?
+    """, (uid,))
+
+    con.commit()
+    con.close()
 
     await message.answer(
-        f"🚫 User {user_id} ban qilindi."
+        f"🚫 {uid} ban qilindi."
     )
 
 
-# ============================================================
-# UNBAN COMMAND
-# ============================================================
-
-@dp.message(F.text.regexp(r"^/unban "))
-async def unban_command(message):
+@dp.message(F.text.startswith("/unban "))
+async def admin_unban(message):
 
     if message.from_user.id != ADMIN_ID:
         return
 
     try:
-        user_id = int(
-            message.text.split()[1]
-        )
+        uid = int(message.text.split()[1])
     except:
         await message.answer(
             "/unban USER_ID"
         )
         return
 
-    set_banned(
-        user_id,
-        0
-    )
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        UPDATE users
+        SET banned=0
+        WHERE id=?
+    """, (uid,))
+
+    con.commit()
+    con.close()
 
     await message.answer(
-        f"✅ User {user_id} unban qilindi."
+        f"✅ {uid} unban qilindi."
     )
 
 
-# ============================================================
-# ADMIN BROADCAST
-# ============================================================
-
-@dp.message(F.text.regexp(r"^/broadcast "))
+@dp.message(F.text.startswith("/broadcast "))
 async def broadcast(message):
 
     if message.from_user.id != ADMIN_ID:
         return
 
-    text = message.text[
-        len("/broadcast "):
-    ].strip()
+    text = message.text[len("/broadcast "):].strip()
 
     if not text:
-
         await message.answer(
-            "Format:\n"
-            "/broadcast Xabar"
+            "/broadcast XABAR"
         )
         return
 
-    users = all_user_ids()
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT id FROM users
+        WHERE banned=0
+    """)
+
+    users = [
+        x[0]
+        for x in cur.fetchall()
+    ]
+
+    con.close()
 
     success = 0
     failed = 0
 
-    await message.answer(
-        f"📢 {len(users)} ta userga yuborish boshlandi..."
-    )
-
-    for user_id in users:
+    for uid in users:
 
         try:
-
             await bot.send_message(
-                user_id,
+                uid,
                 text
             )
-
             success += 1
-
         except:
-
             failed += 1
 
         await asyncio.sleep(0.05)
 
     await message.answer(
         "📢 <b>YAKUNLANDI</b>\n\n"
-        f"✅ Yuborildi: {success}\n"
-        f"❌ Xato: {failed}",
+        f"✅ {success}\n"
+        f"❌ {failed}",
         parse_mode="HTML"
     )
 
 
-# ============================================================
-# ADMIN PAYMENTS
-# ============================================================
+# =========================================================
+# ADMIN INFO BUTTONS
+# =========================================================
 
-@dp.callback_query(F.data == "apayments")
-async def admin_payments(call):
+@dp.callback_query(F.data == "a_search")
+async def a_search(call):
+
+    await call.message.edit_text(
+        "🔎 <b>USER QIDIRISH</b>\n\n"
+        "Bot bazasidan user qidirish:\n\n"
+        "<code>/user username</code>\n"
+        "yoki\n"
+        "<code>/user USER_ID</code>",
+        parse_mode="HTML",
+        reply_markup=admin_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "a_vip")
+async def a_vip(call):
+
+    await call.message.edit_text(
+        "⭐ <b>VIP BERISH</b>\n\n"
+        "<code>/vip USER_ID KUN</code>\n\n"
+        "Masalan:\n"
+        "<code>/vip 123456789 7</code>",
+        parse_mode="HTML",
+        reply_markup=admin_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "a_add")
+async def a_add(call):
+
+    await call.message.edit_text(
+        "➕ <b>BALANS QO‘SHISH</b>\n\n"
+        "<code>/addbal USER_ID SUMMA</code>",
+        parse_mode="HTML",
+        reply_markup=admin_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "a_sub")
+async def a_sub(call):
+
+    await call.message.edit_text(
+        "➖ <b>BALANS AYIRISH</b>\n\n"
+        "<code>/subbal USER_ID SUMMA</code>",
+        parse_mode="HTML",
+        reply_markup=admin_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "a_ban")
+async def a_ban(call):
+
+    await call.message.edit_text(
+        "🚫 <b>BAN</b>\n\n"
+        "<code>/ban USER_ID</code>",
+        parse_mode="HTML",
+        reply_markup=admin_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "a_unban")
+async def a_unban(call):
+
+    await call.message.edit_text(
+        "✅ <b>UNBAN</b>\n\n"
+        "<code>/unban USER_ID</code>",
+        parse_mode="HTML",
+        reply_markup=admin_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "a_broadcast")
+async def a_broadcast(call):
+
+    await call.message.edit_text(
+        "📢 <b>BROADCAST</b>\n\n"
+        "<code>/broadcast Xabar</code>",
+        parse_mode="HTML",
+        reply_markup=admin_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "a_payments")
+async def a_payments(call):
 
     if call.from_user.id != ADMIN_ID:
         return
 
-    con = connect()
+    con = db()
     cur = con.cursor()
 
     cur.execute("""
@@ -1794,32 +1903,29 @@ async def admin_payments(call):
                status, created_at
         FROM payments
         ORDER BY id DESC
-        LIMIT 15
+        LIMIT 20
     """)
 
     rows = cur.fetchall()
-
     con.close()
 
     text = "💳 <b>TO‘LOVLAR</b>\n\n"
 
     if not rows:
-
         text += "To‘lovlar yo‘q."
 
     for row in rows:
 
         pid, uid, amount, status, created = row
 
-        if status == "pending":
-            icon = "⏳"
-        elif status == "approved":
-            icon = "✅"
-        else:
-            icon = "❌"
+        icon = {
+            "pending": "⏳",
+            "approved": "✅",
+            "rejected": "❌"
+        }.get(status, "❔")
 
         text += (
-            f"{icon} #{pid}\n"
+            f"{icon} <b>#{pid}</b>\n"
             f"👤 <code>{uid}</code>\n"
             f"💰 {amount:,} so‘m\n"
             f"📌 {status}\n\n"
@@ -1828,204 +1934,18 @@ async def admin_payments(call):
     await call.message.edit_text(
         text,
         parse_mode="HTML",
-        reply_markup=admin_menu()
-    )
-
-    await call.answer()
-
-
-# ============================================================
-# ADMIN BALANCE BUTTONS
-# ============================================================
-
-@dp.callback_query(F.data == "abalance_add")
-async def balance_add_info(call):
-
-    if call.from_user.id != ADMIN_ID:
-        return
-
-    await call.message.edit_text(
-        "➕ <b>BALANS QO‘SHISH</b>\n\n"
-        "Format:\n"
-        "<code>/addbal USER_ID SUMMA</code>\n\n"
-        "Misol:\n"
-        "<code>/addbal 123456789 50000</code>",
-        parse_mode="HTML",
-        reply_markup=admin_menu()
-    )
-
-    await call.answer()
-
-
-@dp.callback_query(F.data == "abalance_sub")
-async def balance_sub_info(call):
-
-    if call.from_user.id != ADMIN_ID:
-        return
-
-    await call.message.edit_text(
-        "➖ <b>BALANS AYIRISH</b>\n\n"
-        "Format:\n"
-        "<code>/subbal USER_ID SUMMA</code>",
-        parse_mode="HTML",
-        reply_markup=admin_menu()
-    )
-
-    await call.answer()
-
-
-@dp.message(F.text.regexp(r"^/subbal "))
-async def subtract_balance(message):
-
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    parts = message.text.split()
-
-    if len(parts) != 3:
-
-        await message.answer(
-            "/subbal USER_ID SUMMA"
-        )
-        return
-
-    try:
-
-        user_id = int(parts[1])
-        amount = int(parts[2])
-
-    except:
-
-        await message.answer(
-            "❌ Noto‘g‘ri."
-        )
-        return
-
-    user = get_user(user_id)
-
-    if not user:
-
-        await message.answer(
-            "❌ User topilmadi."
-        )
-        return
-
-    new_balance = max(
-        0,
-        user[3] - amount
-    )
-
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        UPDATE users
-        SET balance=?
-        WHERE id=?
-    """, (
-        new_balance,
-        user_id
-    ))
-
-    con.commit()
-    con.close()
-
-    await message.answer(
-        f"✅ Balans ayirildi.\n\n"
-        f"👤 {user_id}\n"
-        f"💰 -{amount:,} so‘m\n"
-        f"📊 Yangi balans: {new_balance:,} so‘m"
+        reply_markup=admin_keyboard()
     )
 
 
-# ============================================================
-# ADMIN VIP BUTTON
-# ============================================================
+# =========================================================
+# PUBLIC STATISTICS
+# =========================================================
 
-@dp.callback_query(F.data == "avip")
-async def admin_vip_info(call):
+@dp.callback_query(F.data == "statistics")
+async def statistics(call):
 
-    if call.from_user.id != ADMIN_ID:
-        return
-
-    await call.message.edit_text(
-        "⭐ <b>VIP BERISH</b>\n\n"
-        "Format:\n"
-        "<code>/vip USER_ID KUN</code>\n\n"
-        "Misol:\n"
-        "<code>/vip 123456789 30</code>",
-        parse_mode="HTML",
-        reply_markup=admin_menu()
-    )
-
-    await call.answer()
-
-
-# ============================================================
-# ADMIN BAN
-# ============================================================
-
-@dp.callback_query(F.data == "aban")
-async def admin_ban_info(call):
-
-    if call.from_user.id != ADMIN_ID:
-        return
-
-    await call.message.edit_text(
-        "🚫 <b>BAN</b>\n\n"
-        "<code>/ban USER_ID</code>",
-        parse_mode="HTML",
-        reply_markup=admin_menu()
-    )
-
-    await call.answer()
-
-
-@dp.callback_query(F.data == "aunban")
-async def admin_unban_info(call):
-
-    if call.from_user.id != ADMIN_ID:
-        return
-
-    await call.message.edit_text(
-        "✅ <b>UNBAN</b>\n\n"
-        "<code>/unban USER_ID</code>",
-        parse_mode="HTML",
-        reply_markup=admin_menu()
-    )
-
-    await call.answer()
-
-
-# ============================================================
-# BROADCAST BUTTON
-# ============================================================
-
-@dp.callback_query(F.data == "abroadcast")
-async def broadcast_info(call):
-
-    if call.from_user.id != ADMIN_ID:
-        return
-
-    await call.message.edit_text(
-        "📢 <b>XABAR YUBORISH</b>\n\n"
-        "Format:\n"
-        "<code>/broadcast Xabaringiz</code>",
-        parse_mode="HTML",
-        reply_markup=admin_menu()
-    )
-
-    await call.answer()
-
-
-# ============================================================
-# STATISTICS
-# ============================================================
-
-@dp.callback_query(F.data == "stats")
-async def public_stats(call):
-
-    con = connect()
+    con = db()
     cur = con.cursor()
 
     cur.execute(
@@ -2037,53 +1957,51 @@ async def public_stats(call):
     con.close()
 
     await call.message.edit_text(
-        "📊 <b>BOT STATISTIKASI</b>\n\n"
+        "📊 <b>STATISTIKA</b>\n\n"
         f"👥 Foydalanuvchilar: <b>{users}</b>",
         parse_mode="HTML",
-        reply_markup=back()
+        reply_markup=back_keyboard()
     )
 
-    await call.answer()
 
-
-# ============================================================
+# =========================================================
 # HELP
-# ============================================================
+# =========================================================
 
 @dp.callback_query(F.data == "help")
-async def help_menu(call):
+async def help(call):
 
     await call.message.edit_text(
         "ℹ️ <b>YORDAM</b>\n\n"
-        "🔎 Qidirish — username bo‘yicha "
-        "ochiq web ma'lumotlarni qidiradi.\n\n"
+        "🔎 Username yuborasiz.\n"
+        "Keyin kerakli bo‘limni tanlaysiz.\n\n"
         "👥 Guruhlar — ochiq/indexlangan "
         "guruh natijalari.\n\n"
-        "📢 Kanallar — ochiq/indexlangan "
-        "kanal natijalari.\n\n"
-        "💬 Ochiq xabarlar — webda ochiq "
-        "ko‘rinadigan xabarlar.\n\n"
-        "🕐 Faollik — ochiq xabarlar sanasi/"
-        "vaqtlariga asoslangan tahlil.\n\n"
-        "🔒 Maxfiy ma'lumotlar olinmaydi.",
+        "💬 Yozgan guruhlari — ochiq "
+        "xabarlar orqali aniqlangan joylar.\n\n"
+        "📢 Kanallar — ochiq kanal natijalari.\n\n"
+        "📸 Rasmlar — faqat ochiq web "
+        "manbalaridagi rasmlar.\n\n"
+        "🕐 Faollik — ochiq xabarlarning "
+        "sana/vaqtlariga asoslangan.\n\n"
+        "🔒 Yopiq guruhlar, shaxsiy xabarlar "
+        "va yashirin online-history olinmaydi.",
         parse_mode="HTML",
-        reply_markup=back()
+        reply_markup=back_keyboard()
     )
 
-    await call.answer()
 
-
-# ============================================================
+# =========================================================
 # BACK
-# ============================================================
+# =========================================================
 
 @dp.callback_query(F.data == "back")
-async def back_handler(call):
+async def back(call):
 
     await call.message.edit_text(
         "🏠 <b>ASOSIY MENYU</b>",
         parse_mode="HTML",
-        reply_markup=main_menu(
+        reply_markup=main_keyboard(
             call.from_user.id
         )
     )
@@ -2091,20 +2009,21 @@ async def back_handler(call):
     await call.answer()
 
 
-# ============================================================
+# =========================================================
 # RUN
-# ============================================================
+# =========================================================
 
 async def main():
 
     init_db()
 
-    print("================================")
-    print("BOT ISHLAYAPTI")
-    print("REAL WEB SEARCH: ON")
+    print("====================================")
+    print("BOT STARTED")
+    print("PUBLIC WEB SEARCH: ON")
+    print("VIP: 7 DAYS")
     print("ADMIN PANEL: ON")
     print("DATABASE: ON")
-    print("================================")
+    print("====================================")
 
     await dp.start_polling(bot)
 
